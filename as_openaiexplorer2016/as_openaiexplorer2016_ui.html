@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>AI Explorer</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style type="text/css">
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            background: #eef2f5;
+            color: #13202d;
+            font-family: Tahoma, Arial, sans-serif;
+            font-size: 13px;
+        }
+
+        body {
+            padding: 12px;
+        }
+
+        .row {
+            margin-bottom: 10px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 4px;
+            font-weight: bold;
+        }
+
+        input[type="text"],
+        input[type="password"],
+        textarea,
+        select {
+            width: 100%;
+            padding: 6px;
+            border: 1px solid #9aa8b3;
+            background: #ffffff;
+            box-sizing: border-box;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 12px;
+        }
+
+        textarea {
+            resize: vertical;
+        }
+
+        .checks {
+            padding: 8px;
+            background: #dfe7ed;
+            border: 1px solid #c0ccd6;
+        }
+
+        .checks label {
+            display: inline-block;
+            width: auto;
+            margin-right: 14px;
+            font-weight: normal;
+        }
+
+        .buttons {
+            margin-bottom: 10px;
+        }
+
+        .buttons button {
+            margin-right: 6px;
+            padding: 7px 12px;
+            border: 1px solid #3d6f99;
+            background: #4f87b7;
+            color: #ffffff;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .buttons button.secondary {
+            background: #6c7d8a;
+            border-color: #55636d;
+        }
+
+        #status {
+            margin-bottom: 10px;
+            padding: 6px 8px;
+            background: #fff7d8;
+            border: 1px solid #dccd83;
+        }
+
+        #status.busy {
+            background: #dfeeff;
+            border-color: #9ab8d3;
+        }
+
+        #transcript {
+            height: 280px;
+            overflow: auto;
+            padding: 8px;
+            background: #ffffff;
+            border: 1px solid #c0ccd6;
+        }
+
+        .entry {
+            margin-bottom: 10px;
+            padding: 8px;
+            border: 1px solid #ccd8e1;
+        }
+
+        .entry h3 {
+            margin: 0 0 6px 0;
+            font-size: 12px;
+        }
+
+        .entry pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .entry .meta {
+            margin-top: 6px;
+            color: #4a5b68;
+            font-size: 11px;
+        }
+
+        .prompt-entry {
+            background: #f4f9ff;
+        }
+
+        .response-entry {
+            background: #f5fff2;
+        }
+
+        .error-entry {
+            background: #fff2f2;
+            border-color: #d8abab;
+        }
+
+        .footer-links a {
+            margin-right: 10px;
+            color: #2b5f88;
+            text-decoration: none;
+        }
+    </style>
+    <script type="text/javascript">
+        function element(id) {
+            return document.getElementById(id);
+        }
+
+        function callRuby(action, payload) {
+            if (window.sketchup && typeof window.sketchup[action] === 'function') {
+                if (typeof payload === 'undefined') {
+                    window.sketchup[action]();
+                } else {
+                    window.sketchup[action](payload);
+                }
+                return;
+            }
+
+            var url = 'skp:' + action + '@';
+            if (typeof payload !== 'undefined') {
+                url += payload;
+            }
+            window.location = url;
+        }
+
+        function collectSettings() {
+            return {
+                aiEndpoint: element('ai-endpoint').value,
+                aiModel: element('ai-model').value,
+                apiKey: element('api-key').value,
+                executeCode: true,
+                submitModelView: element('submit-model-view').checked,
+                showRawData: element('show-raw-data').checked,
+                modelViewQuality: element('model-view-quality').value,
+                useCase: 'execute_ruby'
+            };
+        }
+
+        function saveSettings() {
+            callRuby('write_settings', encodeURIComponent(JSON.stringify(collectSettings())));
+        }
+
+        function applySettings(settings) {
+            if (!settings) {
+                return;
+            }
+
+            if (typeof settings.aiEndpoint !== 'undefined') {
+                element('ai-endpoint').value = settings.aiEndpoint;
+            }
+            if (typeof settings.aiModel !== 'undefined') {
+                element('ai-model').value = settings.aiModel;
+            }
+            if (typeof settings.apiKey !== 'undefined') {
+                element('api-key').value = settings.apiKey;
+            }
+            if (typeof settings.submitModelView !== 'undefined') {
+                element('submit-model-view').checked = !!settings.submitModelView;
+            }
+            if (typeof settings.showRawData !== 'undefined') {
+                element('show-raw-data').checked = !!settings.showRawData;
+            }
+            if (typeof settings.modelViewQuality !== 'undefined') {
+                element('model-view-quality').value = settings.modelViewQuality;
+            }
+        }
+
+        function setStatus(text, busy) {
+            var status = element('status');
+            status.className = busy ? 'busy' : '';
+            status.innerHTML = text || 'Ready.';
+        }
+
+        function clearTranscript() {
+            element('transcript').innerHTML = '';
+        }
+
+        function appendEntry(className, title, body, meta) {
+            var wrapper = document.createElement('div');
+            wrapper.className = 'entry ' + className;
+
+            var heading = document.createElement('h3');
+            heading.appendChild(document.createTextNode(title));
+            wrapper.appendChild(heading);
+
+            var pre = document.createElement('pre');
+            pre.appendChild(document.createTextNode(body || ''));
+            wrapper.appendChild(pre);
+
+            if (meta) {
+                var metaDiv = document.createElement('div');
+                metaDiv.className = 'meta';
+                metaDiv.appendChild(document.createTextNode(meta));
+                wrapper.appendChild(metaDiv);
+            }
+
+            element('transcript').appendChild(wrapper);
+            element('transcript').scrollTop = element('transcript').scrollHeight;
+        }
+
+        function appendPrompt(text) {
+            appendEntry('prompt-entry', 'Prompt', text, 'Scene context is gathered on the Ruby side and sent to the local proxy.');
+        }
+
+        function appendResponse(code, info, rubyOutput) {
+            appendEntry('response-entry', 'Generated Ruby', code, info || '');
+            if (rubyOutput) {
+                appendEntry('response-entry', 'Ruby Output', rubyOutput, '');
+            }
+        }
+
+        function appendError(message, info) {
+            appendEntry('error-entry', 'Error', message, info || '');
+        }
+
+        function submitPrompt() {
+            var prompt = element('prompt').value.replace(/^\s+|\s+$/g, '');
+            if (!prompt) {
+                setStatus('Enter a prompt first.', false);
+                element('prompt').focus();
+                return false;
+            }
+
+            var payload = {
+                prompt: prompt,
+                settings: collectSettings()
+            };
+
+            element('prompt').value = '';
+            setStatus('Sending request...', true);
+            callRuby('submit_prompt', encodeURIComponent(JSON.stringify(payload)));
+            return false;
+        }
+
+        function closeDialog() {
+            callRuby('close_dlg', encodeURIComponent(JSON.stringify(collectSettings())));
+        }
+
+        function initDialog() {
+            setStatus('Loading settings...', true);
+            callRuby('read_settings', '');
+            element('prompt').focus();
+        }
+    </script>
+</head>
+<body onload="initDialog();">
+    <div class="row">
+        <label for="ai-endpoint">WSL Proxy URL</label>
+        <input type="text" id="ai-endpoint" value="http://127.0.0.1:5000/sketchup" autocomplete="off">
+    </div>
+
+    <div class="row" style="color: #4a5b68;">
+        All requests go through your local proxy because SketchUp 2016 cannot reliably talk to provider APIs directly.
+    </div>
+
+    <div class="row">
+        <label for="ai-model">Model</label>
+        <input type="text" id="ai-model" value="gpt-5.4-mini" autocomplete="off">
+    </div>
+
+    <div class="row">
+        <label for="api-key">Provider API Key forwarded to proxy</label>
+        <input type="password" id="api-key" autocomplete="off">
+    </div>
+
+    <div class="row checks">
+        <span>Code execution is always enabled in this test build.</span>
+        <label><input type="checkbox" id="submit-model-view"> Include screenshot</label>
+        <label><input type="checkbox" id="show-raw-data"> Show raw data in Ruby console</label>
+        <label>
+            Screenshot quality:
+            <select id="model-view-quality" style="width: auto; display: inline;">
+                <option value="low">low</option>
+                <option value="high">high</option>
+            </select>
+        </label>
+    </div>
+
+    <div class="row">
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt" rows="6"></textarea>
+    </div>
+
+    <div class="buttons">
+        <button type="button" onclick="submitPrompt();">Send</button>
+        <button type="button" class="secondary" onclick="saveSettings();">Save</button>
+        <button type="button" class="secondary" onclick="callRuby('clear_dlg', '');">Clear</button>
+        <button type="button" class="secondary" onclick="closeDialog();">Close</button>
+    </div>
+
+    <div id="status">Ready.</div>
+    <div id="transcript"></div>
+
+    <div class="row footer-links" style="margin-top: 10px;">
+        <a href="javascript:callRuby('help_dlg', '');">Help</a>
+        <a href="javascript:callRuby('disclaimer_dlg', '');">Terms</a>
+    </div>
+</body>
+</html>

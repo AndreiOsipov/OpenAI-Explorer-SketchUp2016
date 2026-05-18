@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Terms of Use</title>
+  <style type="text/css">
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #eef2f5;
+      font-family: Tahoma, Arial, sans-serif;
+      color: #1c2a36;
+    }
+
+    body {
+      padding: 12px;
+      box-sizing: border-box;
+    }
+
+    #tou-text {
+      width: 100%;
+      height: 88%;
+      box-sizing: border-box;
+      border: 1px solid #bcc9d2;
+      padding: 10px;
+      background: #ffffff;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      resize: none;
+    }
+
+    #actions {
+      margin-top: 10px;
+      text-align: right;
+    }
+
+    button {
+      padding: 7px 14px;
+      border: 1px solid #3d6f99;
+      background: #4f87b7;
+      color: #ffffff;
+      cursor: pointer;
+    }
+  </style>
+  <script type="text/javascript">
+    function callRuby(action) {
+      if (window.sketchup && typeof window.sketchup[action] === 'function') {
+        window.sketchup[action]();
+        return;
+      }
+      window.location = 'skp:' + action + '@';
+    }
+
+    function applyLicense(text) {
+      document.getElementById('tou-text').value = text || '';
+    }
+
+    function initDialog() {
+      callRuby('load_license');
+    }
+  </script>
+</head>
+<body onload="initDialog();">
+  <textarea id="tou-text" readonly="readonly">Loading...</textarea>
+  <div id="actions">
+    <button type="button" onclick="callRuby('license_accepted');">I Accept</button>
+  </div>
+</body>
+</html>

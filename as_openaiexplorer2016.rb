@@ -132,16 +132,16 @@ require 'extensions.rb'
 
 module AS_Extensions
 
-  module AS_OpenAIExplorer
+  module AS_OpenAIExplorer2016
   
     @extversion           = "3.3"
-    @exttitle             = "AI Explorer (Experimental)"
-    @extname              = "as_openaiexplorer"
+    @exttitle             = "AI Explorer (Experimental) 2016"
+    @extname              = "as_openaiexplorer2016"
     
     @extdir = File.dirname(__FILE__)
     @extdir.force_encoding('UTF-8') if @extdir.respond_to?(:force_encoding)
     
-    loader = File.join( @extdir , @extname , "as_openaiexplorer.rb" )
+    loader = File.join( @extdir , @extname , "as_openaiexplorer2016.rb" )
    
     extension             = SketchupExtension.new( @exttitle , loader )
     extension.copyright   = "Copyright 2023-#{Time.now.year} Alexander C. Schreyer"
@@ -151,7 +151,7 @@ module AS_Extensions
     
     Sketchup.register_extension( extension , true )
          
-  end  # module AS_OpenAIExplorer
+  end  # module AS_OpenAIExplorer2016
   
 end  # module AS_Extensions
 
