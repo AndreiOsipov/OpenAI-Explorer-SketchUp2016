@@ -143,13 +143,25 @@
             color: #2b5f88;
             text-decoration: none;
         }
+
+        .footer-links.disabled a {
+            color: #7f8d98;
+            cursor: default;
+        }
     </style>
     <script type="text/javascript">
+        var dialogSettings = {};
+        var uiDisabled = false;
+
         function element(id) {
             return document.getElementById(id);
         }
 
         function callRuby(action, payload) {
+            if (uiDisabled && action !== 'read_settings') {
+                return;
+            }
+
             if (window.sketchup && typeof window.sketchup[action] === 'function') {
                 if (typeof payload === 'undefined') {
                     window.sketchup[action]();
@@ -167,51 +179,29 @@
         }
 
         function collectSettings() {
-            return {
-                aiEndpoint: element('ai-endpoint').value,
-                aiModel: element('ai-model').value,
-                apiKey: element('api-key').value,
-                executeCode: true,
-                submitModelView: element('submit-model-view').checked,
-                showRawData: element('show-raw-data').checked,
-                modelViewQuality: element('model-view-quality').value,
-                useCase: 'execute_ruby'
-            };
-        }
-
-        function saveSettings() {
-            callRuby('write_settings', encodeURIComponent(JSON.stringify(collectSettings())));
+            return dialogSettings || {};
         }
 
         function applySettings(settings) {
-            if (!settings) {
-                return;
-            }
-
-            if (typeof settings.aiEndpoint !== 'undefined') {
-                element('ai-endpoint').value = settings.aiEndpoint;
-            }
-            if (typeof settings.aiModel !== 'undefined') {
-                element('ai-model').value = settings.aiModel;
-            }
-            if (typeof settings.apiKey !== 'undefined') {
-                element('api-key').value = settings.apiKey;
-            }
-            if (typeof settings.submitModelView !== 'undefined') {
-                element('submit-model-view').checked = !!settings.submitModelView;
-            }
-            if (typeof settings.showRawData !== 'undefined') {
-                element('show-raw-data').checked = !!settings.showRawData;
-            }
-            if (typeof settings.modelViewQuality !== 'undefined') {
-                element('model-view-quality').value = settings.modelViewQuality;
-            }
+            dialogSettings = settings || {};
         }
 
         function setStatus(text, busy) {
             var status = element('status');
             status.className = busy ? 'busy' : '';
             status.innerHTML = text || 'Ready.';
+        }
+
+        function setUiDisabled(disabled) {
+            uiDisabled = !!disabled;
+            element('footer-links').className = disabled ? 'row footer-links disabled' : 'row footer-links';
+            var nodes = document.getElementsByTagName('*');
+            var i;
+            for (i = 0; i < nodes.length; i += 1) {
+                if (nodes[i].tagName === 'INPUT' || nodes[i].tagName === 'TEXTAREA' || nodes[i].tagName === 'SELECT' || nodes[i].tagName === 'BUTTON') {
+                    nodes[i].disabled = !!disabled;
+                }
+            }
         }
 
         function clearTranscript() {
@@ -265,8 +255,7 @@
             }
 
             var payload = {
-                prompt: prompt,
-                settings: collectSettings()
+                prompt: prompt
             };
 
             element('prompt').value = '';
@@ -276,47 +265,20 @@
         }
 
         function closeDialog() {
-            callRuby('close_dlg', encodeURIComponent(JSON.stringify(collectSettings())));
+            callRuby('close_dlg', '');
         }
 
         function initDialog() {
             setStatus('Loading settings...', true);
+            setUiDisabled(true);
             callRuby('read_settings', '');
             element('prompt').focus();
         }
     </script>
 </head>
 <body onload="initDialog();">
-    <div class="row">
-        <label for="ai-endpoint">WSL Proxy URL</label>
-        <input type="text" id="ai-endpoint" value="http://127.0.0.1:5000/sketchup" autocomplete="off">
-    </div>
-
     <div class="row" style="color: #4a5b68;">
-        All requests go through your local proxy because SketchUp 2016 cannot reliably talk to provider APIs directly.
-    </div>
-
-    <div class="row">
-        <label for="ai-model">Model</label>
-        <input type="text" id="ai-model" value="gpt-5.4-mini" autocomplete="off">
-    </div>
-
-    <div class="row">
-        <label for="api-key">Provider API Key forwarded to proxy</label>
-        <input type="password" id="api-key" autocomplete="off">
-    </div>
-
-    <div class="row checks">
-        <span>Code execution is always enabled in this test build.</span>
-        <label><input type="checkbox" id="submit-model-view"> Include screenshot</label>
-        <label><input type="checkbox" id="show-raw-data"> Show raw data in Ruby console</label>
-        <label>
-            Screenshot quality:
-            <select id="model-view-quality" style="width: auto; display: inline;">
-                <option value="low">low</option>
-                <option value="high">high</option>
-            </select>
-        </label>
+        Settings now open in a side panel to the right. Use it to reduce reasoning effort or raise max output tokens for long requests, then return to defaults when needed.
     </div>
 
     <div class="row">
@@ -326,7 +288,7 @@
 
     <div class="buttons">
         <button type="button" onclick="submitPrompt();">Send</button>
-        <button type="button" class="secondary" onclick="saveSettings();">Save</button>
+        <button type="button" class="secondary" onclick="callRuby('focus_settings_dlg', '');">Settings</button>
         <button type="button" class="secondary" onclick="callRuby('clear_dlg', '');">Clear</button>
         <button type="button" class="secondary" onclick="closeDialog();">Close</button>
     </div>
@@ -334,8 +296,7 @@
     <div id="status">Ready.</div>
     <div id="transcript"></div>
 
-    <div class="row footer-links" style="margin-top: 10px;">
-        <a href="javascript:callRuby('help_dlg', '');">Help</a>
+    <div class="row footer-links" id="footer-links" style="margin-top: 10px;">
         <a href="javascript:callRuby('disclaimer_dlg', '');">Terms</a>
     </div>
 </body>

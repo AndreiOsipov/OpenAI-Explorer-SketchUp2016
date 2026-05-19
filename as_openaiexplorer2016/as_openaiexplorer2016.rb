@@ -9,6 +9,7 @@ require 'uri'
 require 'json'
 require 'base64'
 require 'stringio'
+require 'thread'
 
 
 # ==================
@@ -43,6 +44,11 @@ module AS_Extensions
 
     # Track a single active dialog so only one can be open at a time
     @active_dialog = nil
+    @settings_dialog = nil
+    @request_thread = nil
+    @request_poll_timer = nil
+    @request_state = nil
+    @request_mutex = Mutex.new
 
     # Load all the system messages from a JSON file
     @system_msgs = {}
@@ -138,6 +144,11 @@ module AS_Extensions
 
     def self.dialog_file_path
       File.join(@extdir, @extname, 'as_openaiexplorer2016_ui.html')
+    end
+
+
+    def self.settings_dialog_file_path
+      File.join(@extdir, @extname, 'as_openaiexplorer2016_settings.html')
     end
 
 
@@ -295,6 +306,19 @@ module AS_Extensions
     end
 
 
+    def self.model_uses_default_temperature_only?(model_name)
+      normalized = model_name.to_s.strip.downcase
+      normalized.match(/(^|[\/:])gpt-5([\-._]|$)/) ? true : false
+    end
+
+
+    def self.resolved_temperature_for(settings)
+      return 1.0 if model_uses_default_temperature_only?(settings["aiModel"])
+
+      settings["temperature"].to_f
+    end
+
+
     def self.build_proxy_request(settings, prompt, history)
       payload = {
         "mode" => "sketchup_ruby",
@@ -306,7 +330,7 @@ module AS_Extensions
         "options" => {
           "execute_code" => true,
           "max_tokens" => settings["maxTokens"].to_i,
-          "temperature" => settings["temperature"].to_f,
+          "temperature" => resolved_temperature_for(settings),
           "reasoning_effort" => settings["reasoning_effort"].to_s,
           "num_prompts" => settings["numPrompts"].to_i,
           "return_format" => "ruby_only",
@@ -328,6 +352,11 @@ module AS_Extensions
       end
 
       payload
+    end
+
+
+    def self.default_dialog_settings
+      normalize_settings(@default_settings_hash.dup)
     end
 
 
@@ -428,15 +457,15 @@ module AS_Extensions
     end
 
 
-    def self.build_dialog(title, width, height)
-      dlg = UI::WebDialog.new(title, true, title.gsub(/\s+/, "_"), width, height, 100, 100, true)
+    def self.build_dialog(title, width, height, left = 100, top = 100)
+      dlg = UI::WebDialog.new(title, true, title.gsub(/\s+/, "_"), width, height, left, top, true)
       dlg.navigation_buttons_enabled = false if dlg.respond_to?(:navigation_buttons_enabled=)
       dlg
     end
 
 
-    def self.register_dialog_close(dialog)
-      closer = proc { @active_dialog = nil; @dialog = nil }
+    def self.register_dialog_close(dialog, &block)
+      closer = proc { block.call if block }
 
       if dialog.respond_to?(:set_on_close)
         dialog.set_on_close(&closer)
@@ -445,6 +474,224 @@ module AS_Extensions
       elsif dialog.respond_to?(:on_closed)
         dialog.on_closed(&closer)
       end
+    end
+
+
+    def self.apply_settings_to_dialogs(settings, main_status = nil, panel_status = nil)
+      settings_js = "applySettings(#{settings.to_json});"
+
+      if @dialog
+        js = settings_js
+        js += " setStatus(#{main_status.dump}, false);" if main_status
+        @dialog.execute_script(js)
+      end
+
+      if @settings_dialog
+        js = settings_js
+        js += " setPanelStatus(#{panel_status.dump}, false);" if panel_status
+        @settings_dialog.execute_script(js)
+      end
+    rescue Exception
+      nil
+    end
+
+
+    def self.set_dialogs_busy(is_busy, main_status = nil, panel_status = nil)
+      if @dialog
+        js = "setUiDisabled(#{is_busy ? 'true' : 'false'});"
+        js += " setStatus(#{main_status.dump}, #{is_busy ? 'true' : 'false'});" if main_status
+        @dialog.execute_script(js)
+      end
+
+      if @settings_dialog
+        js = "setPanelDisabled(#{is_busy ? 'true' : 'false'});"
+        js += " setPanelStatus(#{panel_status.dump}, #{is_busy ? 'true' : 'false'});" if panel_status
+        @settings_dialog.execute_script(js)
+      end
+    rescue Exception
+      nil
+    end
+
+
+    def self.stop_request_polling
+      if @request_poll_timer
+        UI.stop_timer(@request_poll_timer)
+        @request_poll_timer = nil
+      end
+    rescue Exception
+      @request_poll_timer = nil
+    end
+
+
+    def self.clear_request_state
+      stop_request_polling
+      @request_thread = nil
+      @request_mutex.synchronize { @request_state = nil }
+    rescue Exception
+      @request_thread = nil
+      @request_state = nil
+    end
+
+
+    def self.request_in_progress?
+      @request_thread && @request_thread.alive?
+    rescue Exception
+      false
+    end
+
+
+    def self.start_request_thread(uri, req)
+      @request_mutex.synchronize do
+        @request_state = {
+          "done" => false,
+          "response_body" => nil,
+          "request_body" => req.body.to_s,
+          "error" => nil
+        }
+      end
+
+      @request_thread = Thread.new do
+        begin
+          res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: (uri.scheme == 'https'), open_timeout: 15, read_timeout: 120) do |http|
+            http.request(req)
+          end
+
+          begin
+            parsed_body = JSON.parse(res.body)
+          rescue JSON::ParserError
+            parsed_body = { "content" => res.body.to_s }
+          end
+
+          if res.code.to_i >= 400
+            raise extract_error_message(parsed_body, res.body)
+          end
+
+          @request_mutex.synchronize do
+            @request_state["response_body"] = parsed_body
+            @request_state["done"] = true
+          end
+        rescue Exception => e
+          @request_mutex.synchronize do
+            @request_state["error"] = e.message.to_s
+            @request_state["done"] = true
+          end
+        end
+      end
+    end
+
+
+    def self.poll_request_completion(toolname, started_at, user_message)
+      stop_request_polling
+      @request_poll_timer = UI.start_timer(0.2, true) do
+        request_snapshot = @request_mutex.synchronize { @request_state ? @request_state.dup : nil }
+        next unless request_snapshot && request_snapshot["done"]
+
+        clear_request_state
+
+        response_body = request_snapshot["response_body"]
+        errmsg = request_snapshot["error"]
+        request_body = request_snapshot["request_body"].to_s
+        generated_code = nil
+        ruby_result = ''
+        info = ''
+
+        begin
+          if errmsg.to_s != ''
+            raise errmsg.to_s
+          end
+
+          puts_if_enabled "\nRaw Request ============\n"
+          puts_if_enabled request_body
+          puts_if_enabled "\nRaw Response ============\n"
+          puts_if_enabled response_body
+
+          generated_code = extract_generated_code(response_body)
+          raise "Proxy response did not contain Ruby code." if generated_code == ""
+
+          @ai_messages.push(user_message)
+          @ai_messages.push({ "role" => "assistant", "content" => generated_code })
+
+          puts_if_enabled "\nResult ============\n"
+          puts_if_enabled generated_code
+
+          if response_body.is_a?(Hash) && response_body["usage"].is_a?(Hash) && response_body["usage"]["total_tokens"]
+            info += "Tokens used: " + response_body["usage"]["total_tokens"].to_s
+          else
+            info += "Tokens used: unknown"
+          end
+          puts_if_enabled "\nStats ============\n"
+          puts_if_enabled info
+          if response_body.is_a?(Hash) && response_body["choices"].is_a?(Array) && response_body["choices"][0].is_a?(Hash)
+            puts_if_enabled "Finish reason: " + response_body["choices"][0]["finish_reason"].to_s
+          end
+
+          Sketchup.status_text = toolname + " | Executing code"
+          set_dialogs_busy(true, "Executing Ruby inside SketchUp...", "Waiting for code execution to finish...")
+          ruby_result = execute_generated_code(generated_code)
+          info += " | Code was executed."
+          Sketchup.status_text = toolname + " | Done"
+        rescue Exception => e
+          errmsg = e.message.to_s
+          puts_if_enabled "This request generated an error. See dialog for details.\n"
+        end
+
+        duration = Time.now - started_at
+        info += " | Time elapsed: %0.2fs" % duration
+
+        if generated_code && generated_code != "" && @dialog
+          @dialog.execute_script("appendResponse(#{generated_code.dump}, #{info.dump}, #{ruby_result.to_s.dump});")
+        end
+
+        if errmsg && errmsg != "" && @dialog
+          @dialog.execute_script("appendError(#{errmsg.dump}, #{info.dump});")
+        end
+
+        Sketchup.status_text = toolname + " | Ready"
+        set_dialogs_busy(false, "Ready.", "Ready.")
+      end
+    end
+
+
+    def self.close_settings_dialog
+      dlg = @settings_dialog
+      @settings_dialog = nil
+      dlg.close if dlg
+    rescue Exception
+      nil
+    end
+
+
+    def self.open_settings_dialog(left, top)
+      title = @exttitle + " | Settings"
+      @settings_dialog = build_dialog(title, 360, 760, left, top)
+      @settings_dialog.set_file(settings_dialog_file_path)
+      @settings_dialog.show
+
+      register_dialog_close(@settings_dialog) do
+        @settings_dialog = nil
+      end
+
+      @settings_dialog.add_action_callback("read_settings") { |action_context|
+        settings = read_settings_hash
+        apply_settings_to_dialogs(settings, "Ready.", "Settings loaded.")
+        set_dialogs_busy(false)
+      }
+
+      @settings_dialog.add_action_callback("write_settings") { |action_context, payload|
+        settings = persist_settings(parse_dialog_json(payload))
+        apply_settings_to_dialogs(settings, nil, "Settings saved.")
+        set_dialogs_busy(false)
+      }
+
+      @settings_dialog.add_action_callback("reset_dialog_settings") { |action_context|
+        settings = persist_settings(default_dialog_settings)
+        apply_settings_to_dialogs(settings, "Settings reset to defaults.", "Defaults restored.")
+        set_dialogs_busy(false)
+      }
+
+      @settings_dialog.add_action_callback("close_settings_dlg") { |action_context|
+        close_settings_dialog
+      }
     end
     
     
@@ -532,7 +779,11 @@ module AS_Extensions
         if @active_dialog
           begin
             @active_dialog.show
-            @active_dialog.center if @active_dialog.respond_to?(:center)
+            @settings_dialog.show if @settings_dialog
+            if !@settings_dialog
+              open_settings_dialog(690, 100)
+              apply_settings_to_dialogs(read_settings_hash, "Ready.", "Settings loaded.")
+            end
           rescue Exception
           end
           return
@@ -545,78 +796,91 @@ module AS_Extensions
             return
         end       
         
-        # Get the settings, including the API key
-        settings = read_settings_hash
-
         # Set up the dialog
-        @dialog = build_dialog(toolname, 560, 760)
+        @dialog = build_dialog(toolname, 560, 760, 120, 100)
         @dialog.set_file(dialog_file_path)
         @dialog.show
-        @dialog.center if @dialog.respond_to?(:center)
+        open_settings_dialog(690, 100)
 
         # Mark this as the active dialog and clear it on close
         @active_dialog = @dialog
-        register_dialog_close(@dialog)
+        register_dialog_close(@dialog) do
+            clear_request_state
+          @active_dialog = nil
+          @dialog = nil
+          close_settings_dialog
+        end
         
         # Callback to close dialog
-        @dialog.add_action_callback("close_dlg") { |action_context, payload|
-          persist_settings(parse_dialog_json(payload))
+        @dialog.add_action_callback("close_dlg") { |action_context|
+          clear_request_state
           @dialog.close
           @active_dialog = nil
           @dialog = nil
+          close_settings_dialog
         }
         
+        @dialog.add_action_callback("focus_settings_dlg") { |action_context|
+            next if request_in_progress?
+            if !@settings_dialog
+              open_settings_dialog(690, 100)
+            end
+            @settings_dialog.show if @settings_dialog
+        }
+
         # Callback to show disclaimer dialog
         @dialog.add_action_callback("disclaimer_dlg") { |action_context|
+          next if request_in_progress?
             self.show_disclaimer_window
         }  
         
-        # Callback to show help dialog
-        @dialog.add_action_callback("help_dlg") { |action_context|
-            self.show_help
-        }
-
         # Callback to clear dialog
         @dialog.add_action_callback("clear_dlg") { |action_context|
+          next if request_in_progress?
             @ai_messages.clear
             @dialog.execute_script("clearTranscript(); setStatus('Ready.');")
         }             
         
         # Callback to send settings to dialog
         @dialog.add_action_callback("read_settings") { |action_context|
-            # Get the current settings
+            next if request_in_progress?
             settings = read_settings_hash
-            js = "applySettings(#{settings.to_json}); setStatus('Ready.');"
-            @dialog.execute_script(js)                  
+          apply_settings_to_dialogs(settings, "Ready.", "Settings loaded.")
+          set_dialogs_busy(false)
         }      
 
         # Callback to save settings from dialog
         @dialog.add_action_callback("write_settings") { |action_context,payload|
-            persist_settings(parse_dialog_json(payload))
+          next if request_in_progress?
+          settings = persist_settings(parse_dialog_json(payload))
+          apply_settings_to_dialogs(settings, nil, "Settings saved.")
+          set_dialogs_busy(false)
         }        
         
         # Callback to submit prompt and get response
         @dialog.add_action_callback("submit_prompt") { |action_context,payload|
+          if request_in_progress?
+            @dialog.execute_script("appendError('A request is already running.', 'Wait for the current request to finish.'); setStatus('Request already in progress.', false);")
+            next
+          end
 
           t1 = Time.now
-          ruby_result = ''
-          generated_code = nil
-          response_body = nil
-          info = ""
-          errmsg = nil
+          user_message = nil
 
             begin
                 request_hash = parse_dialog_json(payload)
                 prompt = request_hash["prompt"].to_s.strip
                 raise "Prompt is empty." if prompt == ""
 
-                settings = persist_settings(request_hash["settings"].is_a?(Hash) ? request_hash["settings"] : {})
+                incoming_settings = request_hash["settings"].is_a?(Hash) ? request_hash["settings"] : nil
+                settings = incoming_settings ? persist_settings(incoming_settings) : read_settings_hash
                 user_message = { "role" => "user", "content" => prompt }
                 history = @ai_messages.last(settings["numPrompts"].to_i)
 
                 # Life is always better with some feedback while SketchUp works
                 Sketchup.status_text = toolname + " | Collecting scene context"
-                @dialog.execute_script("appendPrompt(#{prompt.dump}); setStatus('Collecting scene context...', true);")
+                set_dialogs_busy(true, "Collecting scene context...", "Main request is running...")
+                @dialog.execute_script("appendPrompt(#{prompt.dump});")
 
                 # Set the local proxy endpoint
                 endpoint_str = settings["aiEndpoint"].to_s
@@ -638,79 +902,18 @@ module AS_Extensions
                 req.body = JSON.dump(body_hash)
 
                 Sketchup.status_text = toolname + " | Sending request to proxy"
-                @dialog.execute_script("setStatus('Waiting for local proxy response...', true);")
-
-                # Make the HTTP request to the local proxy and parse the response
-                res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: (uri.scheme == 'https'), open_timeout: 15, read_timeout: 120) do |http|
-                  http.request(req)
-                end
-                begin
-                  response_body = JSON.parse(res.body)
-                rescue JSON::ParserError
-                  response_body = { "content" => res.body.to_s }
-                end
-
-                if res.code.to_i >= 400
-                  raise extract_error_message(response_body, res.body)
-                end
-                
-                # Add raw response to console output
-                puts_if_enabled "\nRaw Request ============\n"
-                puts_if_enabled req.body
-                puts_if_enabled "\nRaw Response ============\n"
-                puts_if_enabled response_body
-
-                generated_code = extract_generated_code(response_body)
-                raise "Proxy response did not contain Ruby code." if generated_code == ""
-
-                @ai_messages.push(user_message)
-                @ai_messages.push({ "role" => "assistant", "content" => generated_code })
-
-                puts_if_enabled "\nResult ============\n"
-                puts_if_enabled generated_code
-
-                # Display some statistics in the Ruby console
-                if response_body.is_a?(Hash) && response_body["usage"].is_a?(Hash) && response_body["usage"]["total_tokens"]
-                  info += "Tokens used: " + response_body["usage"]["total_tokens"].to_s
-                else
-                  info += "Tokens used: unknown"
-                end
-                puts_if_enabled "\nStats ============\n"
-                puts_if_enabled info    
-                if response_body.is_a?(Hash) && response_body["choices"].is_a?(Array) && response_body["choices"][0].is_a?(Hash)
-                  puts_if_enabled "Finish reason: " + response_body["choices"][0]["finish_reason"].to_s
-                end
-
-                # Execute code immediately in this test build
-                Sketchup.status_text = toolname + " | Executing code"
-                @dialog.execute_script("setStatus('Executing Ruby inside SketchUp...', true);")
-                ruby_result = execute_generated_code(generated_code)
-                info += " | Code was executed."
-
-                # Life is always better with some feedback while SketchUp works
-                Sketchup.status_text = toolname + " | Done"     
+                set_dialogs_busy(true, "Waiting for local proxy response...", "Main request is running...")
+                start_request_thread(uri, req)
+                poll_request_completion(toolname, t1, user_message)
 
               rescue Exception => e    
-              
-                errmsg = e.message.to_s
-
+                clear_request_state
                 puts_if_enabled "This request generated an error. See dialog for details.\n"        
+                Sketchup.status_text = toolname + " | Ready"
+                set_dialogs_busy(false, "Ready.", "Ready.")
+                @dialog.execute_script("appendError(#{e.message.to_s.dump}, '');") if @dialog
 
             end    
-            
-            # Measure duration
-            duration = Time.now - t1
-            info += " | Time elapsed: %0.2fs" % duration     
-
-            if generated_code && generated_code != ""
-              @dialog.execute_script("appendResponse(#{generated_code.dump}, #{info.dump}, #{ruby_result.to_s.dump});")
-            end
-
-            if errmsg && errmsg != ""
-              @dialog.execute_script("appendError(#{errmsg.dump}, #{info.dump});")
-            end
-
-            @dialog.execute_script("setStatus('Ready.');")
 
 
         }  # END add_action_callback("submit_prompt") 
@@ -736,17 +939,6 @@ module AS_Extensions
     # ==================   
     
     
-    def self.show_help
-    # Show the Help website as an About dialog
-    
-      show_url( "#{@exttitle} - Help" , 'https://alexschreyer.net/projects/openai-explorer-experimental/' )
-
-    end # show_help    
-    
-    
-    # ==================     
-    
-
     def self.show_openai_api
     # Open the OpenAI settings pages that have the API Keys
     # Need it this way for initial open
@@ -802,7 +994,6 @@ module AS_Extensions
       menu.add_item("Check Anthropic API Usage") { UI.openURL('https://console.anthropic.com/usage') }      
       menu.add_item("Anthropic API Compatibility") { UI.openURL('https://docs.anthropic.com/en/api/openai-sdk') }       
       menu.add_separator       
-      menu.add_item("Help") { self.show_help }      
       menu.add_item("Terms of Use") { self.show_disclaimer_window }
       menu.add_item("View/edit default system messages") { UI.openURL("file:///#{File.join( @extdir , @extname , "system_msgs.json" )}") }  
       menu.add_item("Reset extension settings") { self.reset_settings }

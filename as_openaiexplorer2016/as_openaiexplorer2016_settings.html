@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>AI Explorer Settings</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style type="text/css">
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            background: #eef2f5;
+            color: #13202d;
+            font-family: Tahoma, Arial, sans-serif;
+            font-size: 13px;
+        }
+
+        body {
+            padding: 12px;
+        }
+
+        .row {
+            margin-bottom: 10px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 4px;
+            font-weight: bold;
+        }
+
+        input[type="text"],
+        input[type="password"],
+        select {
+            width: 100%;
+            padding: 6px;
+            border: 1px solid #9aa8b3;
+            background: #ffffff;
+            box-sizing: border-box;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 12px;
+        }
+
+        .checks {
+            padding: 8px;
+            background: #dfe7ed;
+            border: 1px solid #c0ccd6;
+        }
+
+        .checks label {
+            display: block;
+            font-weight: normal;
+        }
+
+        .buttons {
+            margin-top: 12px;
+            margin-bottom: 10px;
+        }
+
+        .buttons button {
+            margin-right: 6px;
+            margin-bottom: 6px;
+            padding: 7px 12px;
+            border: 1px solid #3d6f99;
+            background: #4f87b7;
+            color: #ffffff;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .buttons button.secondary {
+            background: #6c7d8a;
+            border-color: #55636d;
+        }
+
+        .note {
+            padding: 8px;
+            background: #fff7d8;
+            border: 1px solid #dccd83;
+            color: #4a5b68;
+            line-height: 1.4;
+        }
+
+        #panel-status {
+            margin-bottom: 10px;
+            padding: 6px 8px;
+            background: #ffffff;
+            border: 1px solid #c0ccd6;
+        }
+    </style>
+    <script type="text/javascript">
+        var panelDisabled = false;
+
+        function element(id) {
+            return document.getElementById(id);
+        }
+
+        function callRuby(action, payload) {
+            if (panelDisabled && action !== 'read_settings') {
+                return;
+            }
+
+            if (window.sketchup && typeof window.sketchup[action] === 'function') {
+                if (typeof payload === 'undefined') {
+                    window.sketchup[action]();
+                } else {
+                    window.sketchup[action](payload);
+                }
+                return;
+            }
+
+            var url = 'skp:' + action + '@';
+            if (typeof payload !== 'undefined') {
+                url += payload;
+            }
+            window.location = url;
+        }
+
+        function setPanelStatus(text, busy) {
+            element('panel-status').innerHTML = text || 'Ready.';
+        }
+
+        function setPanelDisabled(disabled) {
+            panelDisabled = !!disabled;
+            var nodes = document.getElementsByTagName('*');
+            var i;
+            for (i = 0; i < nodes.length; i += 1) {
+                if (nodes[i].tagName === 'INPUT' || nodes[i].tagName === 'TEXTAREA' || nodes[i].tagName === 'SELECT' || nodes[i].tagName === 'BUTTON') {
+                    nodes[i].disabled = !!disabled;
+                }
+            }
+        }
+
+        function collectSettings() {
+            return {
+                aiEndpoint: element('ai-endpoint').value,
+                aiModel: element('ai-model').value,
+                apiKey: element('api-key').value,
+                maxTokens: element('max-tokens').value,
+                temperature: element('temperature').value,
+                numPrompts: element('num-prompts').value,
+                reasoning_effort: element('reasoning-effort').value,
+                executeCode: true,
+                submitModelView: element('submit-model-view').checked,
+                showRawData: element('show-raw-data').checked,
+                modelViewQuality: element('model-view-quality').value,
+                useCase: 'execute_ruby'
+            };
+        }
+
+        function applySettings(settings) {
+            if (!settings) {
+                return;
+            }
+
+            element('ai-endpoint').value = settings.aiEndpoint || '';
+            element('ai-model').value = settings.aiModel || '';
+            element('api-key').value = settings.apiKey || '';
+            element('max-tokens').value = settings.maxTokens || '';
+            element('temperature').value = settings.temperature || '';
+            element('num-prompts').value = settings.numPrompts || '';
+            element('reasoning-effort').value = settings.reasoning_effort || 'medium';
+            element('submit-model-view').checked = !!settings.submitModelView;
+            element('show-raw-data').checked = !!settings.showRawData;
+            element('model-view-quality').value = settings.modelViewQuality || 'low';
+        }
+
+        function saveSettings() {
+            setPanelStatus('Saving settings...');
+            callRuby('write_settings', encodeURIComponent(JSON.stringify(collectSettings())));
+        }
+
+        function restoreDefaults() {
+            setPanelStatus('Restoring defaults...');
+            callRuby('reset_dialog_settings', '');
+        }
+
+        function initSettingsPanel() {
+            setPanelStatus('Loading settings...');
+            setPanelDisabled(true);
+            callRuby('read_settings', '');
+        }
+    </script>
+</head>
+<body onload="initSettingsPanel();">
+    <div id="panel-status">Ready.</div>
+
+    <div class="note row">
+        For long prompts, raise max output tokens or lower reasoning effort. GPT-5-family models still force temperature 1.0 even if a different value is stored here.
+    </div>
+
+    <div class="row">
+        <label for="ai-endpoint">WSL Proxy URL</label>
+        <input type="text" id="ai-endpoint" autocomplete="off">
+    </div>
+
+    <div class="row">
+        <label for="ai-model">Model</label>
+        <input type="text" id="ai-model" autocomplete="off">
+    </div>
+
+    <div class="row">
+        <label for="api-key">Provider API Key forwarded to proxy</label>
+        <input type="password" id="api-key" autocomplete="off">
+    </div>
+
+    <div class="row">
+        <label for="max-tokens">Max output tokens</label>
+        <input type="text" id="max-tokens" autocomplete="off">
+    </div>
+
+    <div class="row">
+        <label for="reasoning-effort">Reasoning effort</label>
+        <select id="reasoning-effort">
+            <option value="none">none</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+        </select>
+    </div>
+
+    <div class="row">
+        <label for="num-prompts">History messages to send</label>
+        <input type="text" id="num-prompts" autocomplete="off">
+    </div>
+
+    <div class="row">
+        <label for="temperature">Temperature</label>
+        <input type="text" id="temperature" autocomplete="off">
+    </div>
+
+    <div class="row checks">
+        <span>Code execution is always enabled in this build.</span>
+        <label><input type="checkbox" id="submit-model-view"> Include screenshot</label>
+        <label><input type="checkbox" id="show-raw-data"> Show raw data in Ruby console</label>
+        <label>
+            Screenshot quality:
+            <select id="model-view-quality" style="width: auto; display: inline;">
+                <option value="low">low</option>
+                <option value="high">high</option>
+            </select>
+        </label>
+    </div>
+
+    <div class="buttons">
+        <button type="button" onclick="saveSettings();">Save</button>
+        <button type="button" class="secondary" onclick="restoreDefaults();">Defaults</button>
+        <button type="button" class="secondary" onclick="callRuby('close_settings_dlg', '');">Hide Panel</button>
+    </div>
+</body>
+</html>

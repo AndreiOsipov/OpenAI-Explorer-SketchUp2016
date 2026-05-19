@@ -67,7 +67,7 @@ The Ruby layer then expands this into the full proxy request shown below.
 | `history` | array | yes | Prior messages, capped by `num_prompts`. |
 | `options.execute_code` | boolean | yes | Always `true` in the current build. |
 | `options.max_tokens` | integer | yes | Converted from the stored string setting. |
-| `options.temperature` | number | yes | Converted from the stored string setting. |
+| `options.temperature` | number | yes | Always present. For GPT-5-family models the extension forces `1.0`; other models use the stored setting. |
 | `options.reasoning_effort` | string | yes | One of `low`, `medium`, `high`. |
 | `options.num_prompts` | integer | yes | Number of prior history entries to send. |
 | `options.return_format` | string | yes | Always `ruby_only`. |
@@ -169,7 +169,7 @@ The Ruby layer then expands this into the full proxy request shown below.
   "options": {
     "execute_code": true,
     "max_tokens": 2048,
-    "temperature": 0.2,
+    "temperature": 1.0,
     "reasoning_effort": "medium",
     "num_prompts": 3,
     "return_format": "ruby_only",
@@ -252,7 +252,7 @@ This is the same contract with the optional `screenshot` object included. The Ba
   "options": {
     "execute_code": true,
     "max_tokens": 2048,
-    "temperature": 0.2,
+    "temperature": 1.0,
     "reasoning_effort": "medium",
     "num_prompts": 3,
     "return_format": "ruby_only",
@@ -345,4 +345,5 @@ Return an HTTP status code of 400 or higher and include a readable message in on
 - The extension already strips code fences if they appear, but the proxy should avoid producing them in the first place.
 - The extension executes the returned Ruby immediately after a successful response.
 - If the proxy wants to post-process provider output, it should do that before returning JSON to SketchUp.
+- `options.temperature` is always numeric. For GPT-5-family models the extension forces `1.0`, because those models reject custom non-default temperature values.
 - If token pressure becomes a problem, do any scene compression inside the proxy, not inside the SketchUp extension.
